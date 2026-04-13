@@ -48,7 +48,7 @@ pip install -r requirements.txt
 ## Lancer Tomitube en local
 
 ```bash
-streamlit run Tomitube.py
+streamlit run app.py
 ```
 
 Puis ouvrir l'URL locale affichee par Streamlit (en general http://localhost:8501).
@@ -58,9 +58,10 @@ Puis ouvrir l'URL locale affichee par Streamlit (en general http://localhost:850
 1. Pousser le projet sur GitHub.
 2. Dans Streamlit Cloud, creer une nouvelle app.
 3. Selectionner le repo et la branche.
-4. Definir le fichier principal: `Tomitube.py`.
+4. Definir le fichier principal: `app.py`.
 5. Verifier que le fichier `requirements.txt` est a la racine.
-6. Deployer.
+6. Verifier que le fichier `packages.txt` est a la racine (pour installer FFmpeg automatiquement).
+7. Deployer.
 
 ## Notes techniques
 
