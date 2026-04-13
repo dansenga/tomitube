@@ -290,6 +290,11 @@ def classify_download_error(error: Exception) -> TomitubeError:
 	if "ffmpeg is not installed" in lower:
 		return TomitubeError("FFmpeg est requis pour assembler la vidéo/audio et convertir en MP3.")
 
+	if "403" in lower or "forbidden" in lower:
+		return TomitubeError(
+			"YouTube bloque ce téléchargement depuis le serveur. Réessaie avec une autre qualité ou une autre vidéo."
+		)
+
 	return TomitubeError(f"Échec du téléchargement: {message}")
 
 
@@ -342,6 +347,18 @@ def video_format_selector(quality: int) -> str:
 	)
 
 
+def video_format_selector_progressive(quality: int) -> str:
+	# Prefer progressive (non-fragmented) streams first; often more reliable on cloud IPs.
+	return (
+		f"best[ext=mp4][height<={quality}][acodec!=none][protocol!*=m3u8][protocol!*=dash]/"
+		f"best[height<={quality}][acodec!=none][protocol!*=m3u8][protocol!*=dash]"
+	)
+
+
+def audio_format_selector_progressive() -> str:
+	return "bestaudio[protocol!*=m3u8][protocol!*=dash]/bestaudio/best"
+
+
 class ProgressReporter:
 	def __init__(self, bar: Any, text_box: Any):
 		self.bar = bar
@@ -391,51 +408,91 @@ def download_media(
 	tmp_dir = tempfile.mkdtemp(prefix="tomitube_")
 	output_template = os.path.join(tmp_dir, "%(title).80s-%(id)s.%(ext)s")
 
-	options: dict[str, Any] = {
+	base_options: dict[str, Any] = {
 		"outtmpl": output_template,
 		"noplaylist": True,
 		"quiet": True,
 		"no_warnings": True,
 		"merge_output_format": "mp4",
 		"retries": 3,
-		"fragment_retries": 3,
+		"fragment_retries": 2,
+		"abort_on_unavailable_fragments": True,
 		"socket_timeout": 15,
+		"force_ipv4": True,
+		"geo_bypass": True,
+		"concurrent_fragment_downloads": 1,
+		"http_headers": {
+			"User-Agent": (
+				"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+				"(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+			),
+			"Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+		},
 		"progress_hooks": [ProgressReporter(progress_bar, status_box)],
 	}
 
+	if mode == "video" and quality is None:
+		raise TomitubeError("Aucune qualité vidéo sélectionnée.")
+
+	format_candidates: list[str]
 	if mode == "video":
-		if quality is None:
-			raise TomitubeError("Aucune qualité vidéo sélectionnée.")
-		options["format"] = video_format_selector(quality)
+		format_candidates = [
+			video_format_selector_progressive(quality),
+			video_format_selector(quality),
+		]
 	else:
-		options["format"] = "bestaudio/best"
-		options["postprocessors"] = [
-			{
-				"key": "FFmpegExtractAudio",
-				"preferredcodec": "mp3",
-				"preferredquality": "192",
-			}
+		format_candidates = [
+			audio_format_selector_progressive(),
+			"bestaudio/best",
 		]
 
+	client_profiles = [
+		["android"],
+		["web", "android"],
+	]
+
+	last_error: Exception | None = None
+
+	for clients in client_profiles:
+		for fmt in format_candidates:
+			options = dict(base_options)
+			options["format"] = fmt
+			options["extractor_args"] = {"youtube": {"player_client": clients}}
+
+			if mode == "audio":
+				options["postprocessors"] = [
+					{
+						"key": "FFmpegExtractAudio",
+						"preferredcodec": "mp3",
+						"preferredquality": "192",
+					}
+				]
+
+			try:
+				with YoutubeDL(options) as ydl:
+					ydl.extract_info(url, download=True)
+
+				file_path = _pick_latest_file(tmp_dir)
+				with open(file_path, "rb") as media_file:
+					data = media_file.read()
+
+				file_name = os.path.basename(file_path)
+				mime = "video/mp4" if mode == "video" else "audio/mpeg"
+
+				return {
+					"filename": file_name,
+					"mime": mime,
+					"bytes": data,
+					"size_mb": len(data) / (1024 * 1024),
+				}
+			except DownloadError as exc:
+				last_error = exc
+				continue
+
 	try:
-		with YoutubeDL(options) as ydl:
-			ydl.extract_info(url, download=True)
-
-		file_path = _pick_latest_file(tmp_dir)
-		with open(file_path, "rb") as media_file:
-			data = media_file.read()
-
-		file_name = os.path.basename(file_path)
-		mime = "video/mp4" if mode == "video" else "audio/mpeg"
-
-		return {
-			"filename": file_name,
-			"mime": mime,
-			"bytes": data,
-			"size_mb": len(data) / (1024 * 1024),
-		}
-	except DownloadError as exc:
-		raise classify_download_error(exc) from exc
+		if last_error is not None:
+			raise classify_download_error(last_error) from last_error
+		raise TomitubeError("Échec du téléchargement sans détail yt-dlp exploitable.")
 	except Exception as exc:  # pragma: no cover - defensive fallback
 		raise TomitubeError(f"Échec inattendu: {exc}") from exc
 	finally:
