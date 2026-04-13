@@ -493,6 +493,8 @@ def download_media(
 		if last_error is not None:
 			raise classify_download_error(last_error) from last_error
 		raise TomitubeError("Échec du téléchargement sans détail yt-dlp exploitable.")
+	except TomitubeError:
+		raise
 	except Exception as exc:  # pragma: no cover - defensive fallback
 		raise TomitubeError(f"Échec inattendu: {exc}") from exc
 	finally:
